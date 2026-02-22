@@ -1582,6 +1582,7 @@ class SlateDBReader:
         manifest_poll_interval: int | None = None,
         checkpoint_lifetime: int | None = None,
         max_memtable_bytes: int | None = None,
+        skip_wal_replay: bool | None = None,
     ) -> None:
         """
         Create a read-only reader.
@@ -1597,6 +1598,9 @@ class SlateDBReader:
             manifest_poll_interval: Optional poll interval in milliseconds to refresh manifests and replay new WALs when no explicit checkpoint is supplied. Must be <= checkpoint_lifetime/2.
             checkpoint_lifetime: Optional checkpoint lifetime in milliseconds for implicit reader checkpoints. Must be >= 1000 and > 2x manifest_poll_interval.
             max_memtable_bytes: Optional maximum size in bytes of the internal immutable memtable used when replaying WALs.
+            skip_wal_replay: If ``True``, skip WAL replay on open. Reads will only
+                see data that has been flushed/compacted. Dramatically reduces open latency
+                for databases with many unflushed WAL entries.
 
         Examples:
             >>> reader = SlateDBReader("/tmp/mydb", env_file=".env")
@@ -1619,6 +1623,7 @@ class SlateDBReader:
         manifest_poll_interval: int | None = None,
         checkpoint_lifetime: int | None = None,
         max_memtable_bytes: int | None = None,
+        skip_wal_replay: bool | None = None,
     ) -> SlateDBReader:
         """
         Async constructor for a read-only reader.
@@ -1634,6 +1639,9 @@ class SlateDBReader:
             manifest_poll_interval: Optional manifest poll interval (ms).
             checkpoint_lifetime: Optional checkpoint lifetime (ms).
             max_memtable_bytes: Optional max size of internal immutable memtable when replaying WALs.
+            skip_wal_replay: If ``True``, skip WAL replay on open. Reads will only
+                see data that has been flushed/compacted. Dramatically reduces open latency
+                for databases with many unflushed WAL entries.
 
         Returns:
             A :class:`SlateDBReader` instance.
