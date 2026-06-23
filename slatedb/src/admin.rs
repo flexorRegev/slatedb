@@ -640,6 +640,8 @@ pub fn load_object_store_from_env(
         "aws" => load_aws(),
         #[cfg(feature = "azure")]
         "azure" => load_azure(),
+        #[cfg(feature = "gcp")]
+        "gcs" => load_gcs(),
         #[cfg(feature = "opendal")]
         "opendal" => load_opendal(),
         invalid_value => Err(SlateDBError::InvalidEnvironmentVariable {
@@ -687,6 +689,21 @@ pub fn load_aws() -> Result<Arc<dyn ObjectStore>, Box<dyn Error>> {
 #[cfg(feature = "azure")]
 pub fn load_azure() -> Result<Arc<dyn ObjectStore>, Box<dyn Error>> {
     let builder = object_store::azure::MicrosoftAzureBuilder::from_env();
+    Ok(Arc::new(builder.build()?) as Arc<dyn ObjectStore>)
+}
+
+/// Loads a Google Cloud Storage Object store instance. The environment variables
+/// consumed are the same as those supported by [`GoogleCloudStorageBuilder::from_env`]
+/// (e.g. `GOOGLE_BUCKET`, `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_KEY`),
+/// falling back to Application Default Credentials when no key is provided. Refer to
+/// the builder documentation for the full list and meaning of supported variables:
+/// <https://docs.rs/object_store/latest/object_store/gcp/struct.GoogleCloudStorageBuilder.html#method.from_env>
+///
+/// GCS honors object-store conditional puts natively (generation preconditions), so
+/// no explicit conditional-put configuration is required for SlateDB writer fencing.
+#[cfg(feature = "gcp")]
+pub fn load_gcs() -> Result<Arc<dyn ObjectStore>, Box<dyn Error>> {
+    let builder = object_store::gcp::GoogleCloudStorageBuilder::from_env();
     Ok(Arc::new(builder.build()?) as Arc<dyn ObjectStore>)
 }
 

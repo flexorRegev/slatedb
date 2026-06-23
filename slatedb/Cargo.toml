@@ -96,6 +96,7 @@ pprof = { workspace = true, features = ["criterion", "protobuf-codec"] }
 default = ["aws", "foyer"]
 aws = ["object_store/aws"]
 azure = ["object_store/azure"]
+gcp = ["object_store/gcp"]
 bencher = ["aws", "azure", "wal_disable", "foyer"]
 compression = ["snappy"]
 opendal = ["dep:opendal", "dep:object_store_opendal"]
@@ -114,6 +115,7 @@ test-util = [
 all = [
     "aws",
     "azure",
+    "gcp",
     "compression",
     "opendal",
     "snappy",
