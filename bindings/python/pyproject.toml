@@ -6,7 +6,8 @@ build-backend = "maturin"
 name = "slatedb"
 description = "A cloud native embedded storage engine built on object storage."
 readme = "README.md"
-dynamic = ["version"]
+# Internal Flexor build: upstream 0.16.0 + slatedb#2070 + slatedb#2071 (reader cache setters).
+version = "0.16.0.post1"
 requires-python = ">=3.10"
 
 [project.optional-dependencies]
