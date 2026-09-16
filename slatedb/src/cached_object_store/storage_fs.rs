@@ -210,6 +210,34 @@ impl LocalCacheStorage for FsCacheStorage {
             evictor.start().await
         }
     }
+
+    async fn stop_evictor(&self) {
+        if let Some(evictor) = &self.evictor {
+            evictor.stop();
+        }
+    }
+
+    #[cfg(test)]
+    fn evictor_started(&self) -> bool {
+        self.evictor
+            .as_ref()
+            .is_some_and(|evictor| evictor.started())
+    }
+
+    #[cfg(test)]
+    async fn evictor_tasks_finished(&self) -> bool {
+        let Some(evictor) = &self.evictor else {
+            return true;
+        };
+        // `abort` is asynchronous: give the runtime a few turns to observe the cancellation.
+        for _ in 0..100 {
+            if evictor.background_tasks_finished() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+        evictor.background_tasks_finished()
+    }
 }
 
 impl Display for FsCacheStorage {
@@ -629,6 +657,30 @@ impl FsCacheEvictor {
 
     fn started(&self) -> bool {
         self.started.load(Ordering::Acquire)
+    }
+
+    /// Abort the background scan and evict tasks. Both tasks own an `Arc<FsCacheEvictorInner>`
+    /// (the in-memory index of every cached file), so until they are aborted that index outlives
+    /// the `CachedObjectStore` that created it. Safe to call before `start` or more than once.
+    fn stop(&self) {
+        self.started.store(false, Ordering::Release);
+        if let Some(handle) = self.background_scan_handle.get() {
+            handle.abort();
+        }
+        if let Some(handle) = self.background_evict_handle.get() {
+            handle.abort();
+        }
+    }
+
+    #[cfg(test)]
+    fn background_tasks_finished(&self) -> bool {
+        self.background_scan_handle
+            .get()
+            .is_none_or(|handle| handle.is_finished())
+            && self
+                .background_evict_handle
+                .get()
+                .is_none_or(|handle| handle.is_finished())
     }
 
     async fn background_evict(
@@ -1185,6 +1237,60 @@ mod tests {
         let mut file = std::fs::File::create(&file_path).unwrap();
         file.write_all(&bytes).unwrap();
         file_path
+    }
+
+    #[tokio::test]
+    async fn test_stop_evictor_should_abort_the_background_tasks() {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("objstore_cache_test_stop_evictor_")
+            .tempdir()
+            .unwrap();
+        let recorder = MetricsRecorderHelper::noop();
+        let storage = FsCacheStorage::new(
+            temp_dir.path().to_path_buf(),
+            Some(1024 * 1024),
+            Some(Duration::from_secs(3600)),
+            Arc::new(CachedObjectStoreStats::new(&recorder)),
+            Arc::new(DefaultSystemClock::default()),
+            Arc::new(DbRand::default()),
+            10,
+        );
+
+        storage.start_evictor().await;
+        assert!(storage.evictor_started());
+        // The scan loop sleeps for the scan interval between passes, so it stays alive on its own.
+        tokio::task::yield_now().await;
+        assert!(!storage.evictor_tasks_finished().await);
+
+        storage.stop_evictor().await;
+        assert!(!storage.evictor_started());
+        assert!(storage.evictor_tasks_finished().await);
+
+        // Idempotent: a second stop is a no-op.
+        storage.stop_evictor().await;
+        assert!(storage.evictor_tasks_finished().await);
+    }
+
+    #[tokio::test]
+    async fn test_stop_evictor_before_start_should_be_a_noop() {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("objstore_cache_test_stop_before_start_")
+            .tempdir()
+            .unwrap();
+        let recorder = MetricsRecorderHelper::noop();
+        let storage = FsCacheStorage::new(
+            temp_dir.path().to_path_buf(),
+            Some(1024 * 1024),
+            Some(Duration::from_secs(3600)),
+            Arc::new(CachedObjectStoreStats::new(&recorder)),
+            Arc::new(DefaultSystemClock::default()),
+            Arc::new(DbRand::default()),
+            10,
+        );
+
+        storage.stop_evictor().await;
+        assert!(!storage.evictor_started());
+        assert!(storage.evictor_tasks_finished().await);
     }
 
     #[tokio::test]

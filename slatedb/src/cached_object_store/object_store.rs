@@ -123,6 +123,13 @@ impl CachedObjectStore {
         self.cache_storage.start_evictor().await;
     }
 
+    /// Stop the cache's background tasks. A `Db`/`DbReader` that built its own cache from
+    /// `ObjectStoreCacheOptions` calls this on close; without it every open leaks the evictor's
+    /// in-memory index of the whole cache folder plus the tasks that keep it alive.
+    pub async fn close(&self) {
+        self.cache_storage.stop_evictor().await;
+    }
+
     /// Build a `CachedObjectStore` from `ObjectStoreCacheOptions`, returning `None`
     /// if caching is not configured (i.e. `root_folder` is `None`). When `Some` is
     /// returned the evictor has already been started.

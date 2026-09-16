@@ -594,6 +594,9 @@ impl DbInner {
 pub struct Db {
     pub(crate) inner: Arc<DbInner>,
     task_executor: Arc<MessageHandlerExecutor>,
+    /// The on-disk object-store cache this database built from its settings, kept so `close` can
+    /// stop its background tasks (see `DbReader::cached_object_store`).
+    pub(crate) cached_object_store: Option<Arc<CachedObjectStore>>,
 }
 
 impl Db {
@@ -741,6 +744,10 @@ impl Db {
 
         if let Err(e) = self.inner.table_store.close_cache().await {
             warn!("failed to close block cache [error={:?}]", e);
+        }
+
+        if let Some(cached_object_store) = &self.cached_object_store {
+            cached_object_store.close().await;
         }
 
         info!("db closed");
@@ -11923,6 +11930,39 @@ mod tests {
             async fn close(self) {
                 self.db.close().await.unwrap();
             }
+        }
+
+        #[tokio::test]
+        async fn test_close_should_stop_own_object_store_cache_tasks() {
+            let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            let mut opts = test_db_options(0, 1024, None);
+            let temp_dir = tempfile::Builder::new()
+                .prefix("objstore_cache_close_test_")
+                .tempdir()
+                .unwrap();
+            opts.object_store_cache_options.root_folder = Some(temp_dir.path().to_path_buf());
+            opts.object_store_cache_options.max_cache_size_bytes = Some(1024 * 1024 * 1024);
+            opts.object_store_cache_options.scan_interval = Some(Duration::from_secs(3600));
+            opts.object_store_cache_options.part_size_bytes = 1024;
+            let kv_store = Db::builder("/tmp/test_kv_store_cache_close", object_store.clone())
+                .with_settings(opts)
+                .build()
+                .await
+                .unwrap();
+            kv_store.put(b"k", b"v").await.unwrap();
+
+            let cached = Arc::clone(
+                kv_store
+                    .cached_object_store
+                    .as_ref()
+                    .expect("db built from cache settings owns its cached store"),
+            );
+            assert!(cached.cache_storage.evictor_started());
+
+            kv_store.close().await.unwrap();
+
+            assert!(!cached.cache_storage.evictor_started());
+            assert!(cached.cache_storage.evictor_tasks_finished().await);
         }
 
         #[tokio::test]

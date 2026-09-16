@@ -74,6 +74,22 @@ pub trait LocalCacheStorage: Send + Sync + std::fmt::Debug + Display + 'static {
     fn entry(&self, location: &Path, part_size: usize) -> Box<dyn LocalCacheEntry>;
 
     async fn start_evictor(&self);
+
+    /// Stop the background tasks started by [`Self::start_evictor`]. The tasks hold references to
+    /// the storage's in-memory bookkeeping, so a storage that is dropped without this call keeps
+    /// running (and keeps its memory) for the life of the process. Idempotent.
+    async fn stop_evictor(&self) {}
+
+    #[cfg(test)]
+    fn evictor_started(&self) -> bool {
+        false
+    }
+
+    /// True once the background tasks have observed their abort (or were never started).
+    #[cfg(test)]
+    async fn evictor_tasks_finished(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]

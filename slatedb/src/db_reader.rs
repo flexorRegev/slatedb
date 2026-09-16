@@ -111,6 +111,10 @@ impl WalReplayEnd {
 pub struct DbReader {
     inner: Arc<DbReaderInner>,
     task_executor: MessageHandlerExecutor,
+    /// The on-disk object-store cache this reader built from its `ObjectStoreCacheOptions`, kept so
+    /// `close` can stop its background tasks. `None` when caching is off or the caller supplied an
+    /// already-cached object store.
+    pub(crate) cached_object_store: Option<Arc<CachedObjectStore>>,
 }
 
 struct DbReaderInner {
@@ -1020,6 +1024,7 @@ impl DbReader {
         Ok(Self {
             inner,
             task_executor,
+            cached_object_store: None,
         })
     }
 
@@ -1378,6 +1383,10 @@ impl DbReader {
 
         if let Err(e) = self.inner.table_store.close_cache().await {
             warn!("failed to close block cache [error={:?}]", e);
+        }
+
+        if let Some(cached_object_store) = &self.cached_object_store {
+            cached_object_store.close().await;
         }
 
         Ok(())
@@ -3648,6 +3657,94 @@ mod tests {
             !entries.is_empty(),
             "Expected disk cache directory to be populated after read"
         );
+    }
+
+    #[tokio::test]
+    async fn should_stop_own_object_store_cache_tasks_on_close() {
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let path = Path::from("/tmp/test_db_reader_cache_close");
+
+        let db = Db::builder(path.clone(), Arc::clone(&object_store))
+            .with_settings(Settings::default())
+            .build()
+            .await
+            .unwrap();
+        db.put(b"key1", b"value1").await.unwrap();
+        db.flush().await.unwrap();
+        db.close().await.unwrap();
+
+        let cache_dir = tempfile::Builder::new()
+            .prefix("dbreader_cache_close_test_")
+            .tempdir()
+            .unwrap();
+        let options = DbReaderOptions {
+            object_store_cache_options: crate::config::ObjectStoreCacheOptions {
+                root_folder: Some(cache_dir.path().to_path_buf()),
+                max_cache_size_bytes: Some(1024 * 1024 * 1024),
+                scan_interval: Some(Duration::from_secs(3600)),
+                part_size_bytes: 1024,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reader = DbReader::builder(path.clone(), Arc::clone(&object_store))
+            .with_options(options)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.get(b"key1").await.unwrap(),
+            Some(Bytes::from_static(b"value1"))
+        );
+
+        let cached = Arc::clone(
+            reader
+                .cached_object_store
+                .as_ref()
+                .expect("reader built from cache options owns its cached store"),
+        );
+        assert!(cached.cache_storage.evictor_started());
+
+        reader.close().await.unwrap();
+
+        assert!(!cached.cache_storage.evictor_started());
+        assert!(cached.cache_storage.evictor_tasks_finished().await);
+    }
+
+    #[tokio::test]
+    async fn should_not_own_a_cached_store_when_the_caller_supplies_one() {
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let path = Path::from("/tmp/test_db_reader_caller_cache");
+
+        let db = Db::builder(path.clone(), Arc::clone(&object_store))
+            .with_settings(Settings::default())
+            .build()
+            .await
+            .unwrap();
+        db.put(b"key1", b"value1").await.unwrap();
+        db.flush().await.unwrap();
+        db.close().await.unwrap();
+
+        let cache_dir = tempfile::Builder::new()
+            .prefix("dbreader_caller_cache_test_")
+            .tempdir()
+            .unwrap();
+        let cached_store = crate::cached_object_store::CachedObjectStore::builder(
+            cache_dir.path().to_path_buf(),
+            Arc::clone(&object_store),
+        )
+        .with_part_size_bytes(1024)
+        .build()
+        .await
+        .unwrap();
+
+        let reader = DbReader::builder(path.clone(), cached_store)
+            .build()
+            .await
+            .unwrap();
+        // The caller keeps ownership (and the lifecycle) of a store it built itself.
+        assert!(reader.cached_object_store.is_none());
+        reader.close().await.unwrap();
     }
 
     #[tokio::test]
